@@ -1,0 +1,264 @@
+---
+title: "Statistical analysis - based on household surveys"
+author: "Franziska Walther"
+date: "03/10/2023"
+output: html_document
+---
+
+#### (Install and) load packages:     
+```{r,warning=FALSE,message=FALSE}
+setwd("~/Pius_stats")
+
+library(rstan)
+library(brms)
+library(readxl)
+library(tidyverse)
+library(bayesplot)
+
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+```
+
+### Research hypothesis 1:  
+Drivers for crop diversification -    
+How does crop diversification vary across households?   
+The relative contribution of household measures (predictors) to dominant adaptation (i.e. crop diversification, reponse).    
+
+##### Data wrangling  
+```{r}
+#load data 
+data <- read_xlsx("~/Pius_stats/data_indicators_new.xlsx")
+data_crop_div <- read_xlsx(("~/Pius_stats/data_hhperc_crops.xlsx"))
+
+# reduce multiple instances of one household
+crop_div_reduced <-  data_crop_div %>% 
+  group_by(hh_index) %>% 
+  summarise(crop_diversification = sum(`Crop diversification`))
+  
+# merge data sets
+data_merge <- merge(data, crop_div_reduced, by.x = "hh_index", by.y = "hh_index", all.x = TRUE)
+
+# handle multiple crop diversifications in one household and NAs
+data_merge$crop_diversification <- ifelse(is.na(data_merge$crop_diversification), 0,
+                                                data_merge$crop_diversification)
+data_merge$crop_diversification <- ifelse(data_merge$crop_diversification > 1, 1,
+                                          data_merge$crop_diversification)
+data_merge <- data_merge %>% 
+  mutate_if(is.character,as.factor)
+
+#Create dataframe of interest (response and predictors)
+df_m <- data_merge %>%
+  select(crop_diversification, hhh_gender, hhh_age, hhsize, hh_landsize, hh_plots, hh_farmyears, assets_number_hh, income_annual_usd, income_sources_number, liv_tlu_total, credit, use_any, hhh_educyears)
+
+#Some variables need to be turned into factors
+df_m$hhh_gender <- as.factor(df_m$hhh_gender)
+df_m$credit <- as.factor(df_m$credit)
+df_m$use_any <- as.factor(df_m$use_any)
+
+str(df_m) 
+
+```
+
+##### Modelling:    
+The response variable is binary (0 or 1), hence I decided for a logistic regression using a binomial distribution, i.e. bernoulli distribution. 
+```{r}
+
+fit <- brm(crop_diversification ~ hhh_gender + hhh_age + hhsize + hh_landsize + hh_plots + hh_farmyears + assets_number_hh + income_annual_usd + income_sources_number + liv_tlu_total + credit + use_any + hhh_educyears, data=df_m, family = bernoulli, chains=4, iter = 2000, warmup=1000)
+
+```
+
+##### Have a look at model diagnostics and outcome:   
+```{r}
+rhats <- rhat(fit)
+mcmc_rhat(rhats)
+ratios <- neff_ratio(fit)
+mcmc_neff(ratios)
+
+#Posterior predictive check 
+pp_check(fit)
+
+prior_summary(fit)
+```
+
+##### Specify priors:  
+Uniform/Flat priors are the least informative assumptions, hence I adjusted the priors.   
+```{r}
+fit1 <- brm(crop_diversification ~ hhh_gender + hhh_age + hhsize + hh_landsize + hh_plots + hh_farmyears + assets_number_hh + income_annual_usd + income_sources_number + liv_tlu_total + credit + use_any + hhh_educyears, 
+             data=df_m, family = bernoulli, chains=4, iter = 2000, warmup=1000, 
+             prior = prior(normal(0,10), class = b))
+            
+```
+
+##### Have a look at model outcome:   
+```{r}
+#PRIOR predictive distribution 
+  m1_prior <- brm(crop_diversification ~ hhh_gender + hhh_age + hhsize + hh_landsize + hh_plots + hh_farmyears + assets_number_hh + income_annual_usd + income_sources_number + liv_tlu_total + credit + use_any + hhh_educyears, 
+             data=df_m, family = bernoulli, chains=4, iter = 2000, warmup=1000, 
+             prior = prior(normal(0, 10), class = b),
+            sample_prior = "only")
+
+  #prior predictive checks
+  pp_check(m1_prior)
+
+#POSTERIOR
+posterior_summary(fit1)
+
+#posterior predictive checks 
+pp_check(fit1)
+
+#Slopes: Predictors' effects on response  
+mcmc_plot(fit1, point_est = "median", prob = .6, prob_outer = .90)
+
+#potential drivers 
+mcmc_intervals(fit1, point_est = "median", pars = c("b_hhh_genderMale", "b_creditYes", "b_liv_tlu_total","b_use_any1","b_hhh_educyears"),prob=0.9)
+
+#model diagnostics 
+  #chains: 
+  mcmc_plot(fit1, type = "trace")
+   rhats <- rhat(fit1)
+  mcmc_rhat(rhats)
+  ratios <- neff_ratio(fit1)
+  mcmc_neff(ratios)
+
+```
+
+##### Preliminary findings:   
+**Crop diversification is affected by:**  
+**- gender (male: 2.11 [0.06-4.56]),**     
+**- use of weather information (yes: 3.05 [1.07-5.35]),**     
+**- credit -1.04[-2.22 - 0.17]),**     
+**- years of education (0.17 [0.04 - 0.31),**     
+**- (and livestock TLU (0.11 [-0.04 - 0.28])).**     
+**- (median [95% confidence interval])**    
+
+
+### Research hypothesis 2:   
+How does the use of weather information vary across households?   
+
+#### Prepare data and create Model:  
+```{r}
+data <- read_xlsx("~/Pius_stats/data_indicators_new.xlsx")
+
+data_2 <- data %>%
+  select(use_any, access_number, income_annual_usd, income_sources_number, hhh_gender, hhh_age, hhh_educyears, hh_farmyears, livestock_have)
+
+data_2$use_any <- as.factor(data_2$use_any)
+data_2$hhh_gender <- as.factor(data_2$hhh_gender)
+data_2$livestock_have <- as.factor(data_2$livestock_have)
+
+str(data_2) 
+
+fit2 <- brm(use_any ~ income_annual_usd + income_sources_number + hhh_gender + hhh_age +
+              hhh_educyears + hh_farmyears + livestock_have, 
+             data=data_2, family = bernoulli, chains=4, iter = 2000, warmup=1000, 
+            prior = c(prior(normal(0,10), class=b, coef="income_annual_usd"), 
+            #how to include non-normal distribution of income (e.g. exp)? 
+                       prior(normal(0,5), class=b, coef="income_sources_number"), 
+                       prior(normal(0,5), class = b, coef = "hhh_educyears"),
+                       prior(normal(0,5), class = b, coef = "hh_farmyears")))
+            #how to set priors for categorical variables!? 
+            # prior(normal(0,1), class = b, coef = "livestock_have1"),
+            # prior(normal(0,1), class = b, coef = "hhh_genderMale")))
+```
+
+
+##### Have a look at model diagnostics and outcome:   
+```{r}
+#model diagnostics 
+rhats <- rhat(fit2)
+mcmc_rhat(rhats)
+
+ratios <- neff_ratio(fit2)
+mcmc_neff(ratios)
+
+#chains: 
+  mcmc_plot(fit2, type = "trace")
+
+#POSTERIOR
+#posterior predictive checks 
+pp_check(fit2)
+
+posterior_summary(fit2)
+
+#potential drivers:
+mcmc_intervals(fit2, point_est = "median", pars = c("b_income_sources_number", "b_hhh_genderMale", "b_hhh_age", "b_hh_farmyears","b_livestock_have1"),prob=0.9)
+
+```
+
+##### Preliminary findings:   
+**The use of weather information is affected by households':**  
+**- income source number (0.47 [-0.04 - 1.03])(?),**     
+**- gender (male: 0.38 [-0.6 - 1.28])(?),**     
+**- age (0.10 [0.06 - 0.15]),**   
+**- years of farming (-0.07 [ -0.11 - -0.02]),**     
+**- and if the household has livestock (yes: -0.42 [-1.18 - 0.32])(?).**     
+**- ? = significant or not, bc 95% CI transgresses 0.**     
+
+
+### Research hypothesis 3:   
+
+How does income vary across households? Which factors are driving income disparities?   
+```{r}
+data <- read_xlsx("~/Pius_stats/data_indicators_new.xlsx")
+
+data_3 <- data %>%
+  select(income_annual_usd, income_sources_number, hhh_gender, hhh_age, assets_number_hh, liv_tlu_total, hhh_educyears, hh_farmyears, credit, hhsize, hh_landsize, hh_plots)
+
+data_3$hhh_gender <- as.factor(data_3$hhh_gender)
+data_3$credit <- as.factor(data_3$credit)
+data_3$income_annual_usd <- data_3$income_annual_usd + 0.01 
+str(data_3) 
+
+#response: annual income in USD
+fit3A <- brm(income_annual_usd ~ hhh_gender + hhh_age + assets_number_hh + liv_tlu_total + hhh_educyears + hh_farmyears + credit + hhsize + hh_landsize + hh_plots, 
+             data=data_3, family = exponential,
+            chains=4, iter = 2000, warmup=1000, 
+             prior = prior(normal(0,5), class=b))
+                    
+#response: number of income sources 
+fit3B <- brm(income_sources_number ~ hhh_gender + hhh_age + assets_number_hh + liv_tlu_total + hhh_educyears + hh_farmyears + credit + hhsize + hh_landsize + hh_plots, 
+             data=data_3, family = poisson, 
+            chains=4, iter = 2000, warmup=1000, 
+             prior = prior(normal(0,5), class=b))
+```
+
+
+##### Have a look at model 3A:   
+```{r}
+  #model diagnostics
+  rhats <- rhat(fit3A)
+  mcmc_rhat(rhats)
+  ratios <- neff_ratio(fit3A)
+  mcmc_neff(ratios)
+  #chains: 
+  mcmc_plot(fit3A, type = "trace")
+
+#POSTERIOR
+#posterior predictive checks 
+pp_check(fit3A)
+
+posterior_summary(fit3A)
+
+#potential drivers:
+mcmc_intervals(fit3A, point_est = "median", pars = c("b_hhh_genderMale", "b_hhh_age", "b_assets_number_hh","b_liv_tlu_total", "b_hh_farmyears", "b_creditYes", "b_hhsize", "b_hh_landsize", "b_hh_plots"),prob=0.9)
+
+```
+
+**Model 3A indicates that gender, age, number of assets, TLU, years of farming, credit, household size, landsize, plots effect the annual income (USD).**   
+
+
+##### Have a look at model 3B:   
+```{r}
+  #Model diagnostics 
+  rhats <- rhat(fit3B)
+  mcmc_rhat(rhats)
+  ratios <- neff_ratio(fit3B)
+  mcmc_neff(ratios)
+  #chains: 
+  mcmc_plot(fit3B, type = "trace")
+
+  #potential drivers: 
+mcmc_intervals(fit3B, point_est = "median", pars = c("b_assets_number_hh","b_liv_tlu_total", "b_hh_landsize"),prob=0.9)
+```
+
+**Model 3B indicates that the number of income sources is influenced by the number of assets, TLU and the landsize of households.**    
